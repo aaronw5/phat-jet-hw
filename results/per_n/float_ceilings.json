@@ -1,0 +1,46 @@
+{
+ "float_core7": {
+  "epochs": 60,
+  "best_val_acc": 81.59
+ },
+ "float_core7_n128_par": {
+  "epochs": 40,
+  "best_val_acc": 81.24
+ },
+ "float_core7_n16": {
+  "epochs": 30,
+  "best_val_acc": 71.28
+ },
+ "float_core7_n16_scratch": {
+  "epochs": 120,
+  "best_val_acc": 73.3
+ },
+ "float_core7_n32": {
+  "epochs": 30,
+  "best_val_acc": 78.04
+ },
+ "float_core7_n32_long": {
+  "epochs": 120,
+  "best_val_acc": 79.11
+ },
+ "float_core7_n32_par": {
+  "epochs": 30,
+  "best_val_acc": 77.41
+ },
+ "float_core7_n32_ps4": {
+  "epochs": 120,
+  "best_val_acc": 79.32
+ },
+ "float_core7_n64": {
+  "epochs": 30,
+  "best_val_acc": 80.47
+ },
+ "float_core7_n64_long": {
+  "epochs": 100,
+  "best_val_acc": 81.9
+ },
+ "float_core7_n64_par": {
+  "epochs": 30,
+  "best_val_acc": 80.64
+ }
+}

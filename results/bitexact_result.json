@@ -1,0 +1,9 @@
+{
+ "ckpt": "epoch=140-val_acc=0.7864-ebops=926777.keras",
+ "n_samples": 2000,
+ "n_mismatch_rows": 0,
+ "max_abs_diff": 0.0,
+ "rtl_acc": 0.78,
+ "keras_acc": 0.78,
+ "bit_exact": true
+}

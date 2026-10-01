@@ -1,8 +1,8 @@
 design,acc,LUT,pct_VU13P,stages,latency_ns_300MHz,DSP,BRAM,II,source,note
 PHAT-JeT N=64 (L1T-envelope point),74.58,167304,9.7,29,96.6,0,0,1,da4ml estimate,clears sub-100 ns AND fits device
 PHAT-JeT N=64 (max acc @500MHz),78.42,1221621,70.7,40,133.2,0,0,1,da4ml estimate,80.0 ns at 500 MHz
-PHAT-JeT N=128 (max acc in LUT budget),78.6,902337,52.2,71,236.4,0,0,1,da4ml estimate,52% of device
-PHAT-JeT N=128 (bit-exact verified),78.64,1188245,68.8,76,253.1,0,0,1,da4ml estimate,"RTL bit-exact vs Keras, 2000 samples"
+PHAT-JeT N=128 (max acc in LUT budget),78.6,902337,52.2,-,not traced at 300 MHz,0,0,1,da4ml estimate,52% of device; only traced at 2 ns cutoff (71 stages)
+PHAT-JeT N=128 (bit-exact verified),78.64,1185319,68.6,38,126.5,0,0,1,da4ml estimate,"RTL bit-exact vs Keras, 2000 samples; 300 MHz trace"
 JEDI-linear N=16 (pT-sorted),71.9,44000,2.5,-,54,0,0,1,published post-P&R,
 JEDI-linear N=32 (pT-sorted),78.0,45000,2.6,-,63,0,0,1,published post-P&R,
 JEDI-linear N=64 (pT-sorted),80.9,71000,4.1,-,61,0,0,1,published post-P&R,

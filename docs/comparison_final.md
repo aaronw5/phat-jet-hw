@@ -1,5 +1,7 @@
 # PHAT-JeT hardware comparison (rebuttal)
 
+> Corrected: the two N=128 latencies previously used stage counts traced at a 2 ns cutoff × 3.33 ns (236.4 / 253.1 ns). The 300 MHz trace of the bit-exact checkpoint is 38 stages = 126.5 ns; the 902k point has no 300 MHz trace yet.
+
 All PHAT-JeT rows are **da4ml logic estimates**, not post-place-and-route. Calibration: tracing JEDI-linear's own released N=128 model through the identical instrument gives 99,690 LUT against their published post-route 97,822 — an overestimate of 1.9%. Published rows are post-P&R from their respective papers.
 
 Envelope (from JEDI-linear Sec. III): CTL2 = 30 VU13P FPGAs, sub-100 ns latency, sub-10 ns initiation interval. VU13P capacity = 1,728,000 LUT.
@@ -8,8 +10,8 @@ Envelope (from JEDI-linear Sec. III): CTL2 = 30 VU13P FPGAs, sub-100 ns latency,
 |---|---|---|---|---|---|---|---|---|---|
 | PHAT-JeT N=64 (L1T-envelope point) | 74.58 | 167,304 | 9.7 | 96.6 | 0 | 0 | 1 | da4ml estimate | clears sub-100 ns AND fits device |
 | PHAT-JeT N=64 (max acc, LUT budget only) | 78.42 | 1,221,621 | 70.7 | 133.2 | 0 | 0 | 1 | da4ml estimate | exceeds 100 ns bound |
-| PHAT-JeT N=128 (max acc in LUT budget) | 78.6 | 902,337 | 52.2 | 236.4 | 0 | 0 | 1 | da4ml estimate | 52% of device |
-| PHAT-JeT N=128 (bit-exact verified) | 78.64 | 1,188,245 | 68.8 | 253.1 | 0 | 0 | 1 | da4ml estimate | RTL bit-exact vs Keras, 2000 samples |
+| PHAT-JeT N=128 (max acc in LUT budget) | 78.6 | 902,337 | 52.2 | not traced at 300 MHz | 0 | 0 | 1 | da4ml estimate | 52% of device |
+| PHAT-JeT N=128 (bit-exact verified) | 78.64 | 1,185,319 | 68.6 | 126.5 | 0 | 0 | 1 | da4ml estimate | RTL bit-exact vs Keras, 2000 samples |
 | JEDI-linear N=16 (pT-sorted) | 71.9 | 44,000 | 2.5 | 54 | 0 | 0 | 1 | published post-P&R |  |
 | JEDI-linear N=32 (pT-sorted) | 78.0 | 45,000 | 2.6 | 63 | 0 | 0 | 1 | published post-P&R |  |
 | JEDI-linear N=64 (pT-sorted) | 80.9 | 71,000 | 4.1 | 61 | 0 | 0 | 1 | published post-P&R |  |
