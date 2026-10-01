@@ -1,0 +1,17 @@
+# Whitelist: the working dir holds ~7 GB of checkpoints, traces and Verilog projects.
+# Track only code, docs and small results.
+/*
+!/.gitignore
+!/README.md
+!/TASK_PROMPT.md
+!/scripts/
+!/docs/
+!/results/
+
+__pycache__/
+*.pyc
+*.npz
+*.h5
+*.keras
+*.tmp
+.DS_Store
