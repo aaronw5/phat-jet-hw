@@ -88,34 +88,91 @@ The aim is to show feasibility: the model fits the CMS L1T envelope (<100 ns, II
 ~10% of VU13P). It doesn't claim to beat JEDI-Linear. See `TASK_PROMPT.md` /
 `docs/HANDOFF.md`.
 
+## How PHAT-JeT was implemented in hardware
+
+The public PHAT-JeT code is TF/Keras 2. It uses dynamic shapes,
+`tf.scatter_nd`/`tf.gather_nd`, and a grid that changes per jet. None of that can
+go through HGQ2 → da4ml. That flow needs static shapes, only ops in da4ml's trace
+registry, and no dynamic indexing. The model was therefore rewritten in
+`scripts/phat_jet_k3.py` as a single builder. The same code produces both the float
+reference and the quantized (HGQ2) model, so trained float weights load 1:1 into
+the quantized model.
+
+### Changes to the architecture
+
+| # | Paper model | Hardware model | Why |
+|---|---|---|---|
+| 1 | GMP on a per-jet dynamic grid, `scatter_nd` / `gather_nd` | **Fixed grid** within ±0.4 in η/φ. Per-bin one-hot indicator LUTs, an outer product to cells, and einsum scatter-add → depthwise conv → einsum gather-back. Same math. | Dynamic indexing can't be traced. Inputs are jet-relative, and 99.9% of constituents fall within ±0.4. |
+| 2 | Uniform δ=0.1 bins | **`core7`**: 7×7 non-uniform bins, 0.08 wide in the core (\|x\|<0.2), wider outside | Fine bins where the jet core sits. In a short QAT comparison it beat the uniform 8×8 grid by **+2.0 points** at lower cost (`docs/grid_study.md`). |
+| 3 | 8×8 depthwise kernel on a δ=0.05 grid | 3×3 kernel on the fixed grid | Similar physical receptive field (~0.3 vs ~0.4) |
+| 4 | Patch size 10 on 150 particles | Patch size 8 on 128 particles (16 patches, no padding) | Matches JEDI-Linear's 128-particle input. The paper's sweep shows low sensitivity to patch size. |
+| 5 | LayerNorm | **Removed** | A runtime divide and square root don't fit a fully unrolled II=1 design. JEDI-Linear has no runtime normalization either. |
+| 6 | Attention scaled by 1/√d_head; softmax output | Scale folded into W_q; the model outputs logits | Exact reparameterization; argmax doesn't need softmax on chip |
+| 7 | — | Softmax exp-table input capped at 5 integer bits | HGQ sized the exp table from rare outliers (1024 entries). The cap cut lookup logic 4.1x, **−24.6% total LUTs** for +0.05% accuracy. 4 bits loses 3.1%. |
+| 8 | — | Optional `parallel_attn`: local and patch attention as parallel branches | Pipeline depth becomes max(local, patch) instead of their sum: **1.44x lower latency** at N=64. This computes a different function, so the model has to be trained this way. |
+
+### Fixes needed to make it trace and train
+
+- **Tracer limits:** `ops.stack` → `Concatenate` + `Reshape`. `ops.mean`/`ops.sum` →
+  `hgq.layers.QSum(scale=1/8)`, a power-of-two shift. Einsum indices must be lowercase.
+  Custom `Layer` subclasses are invisible to the tracer, so everything is functional
+  Keras ops or registered Q-layers.
+- **Float donor must match the hardware model.** QAT initialized from a donor trained
+  *with* LayerNorm collapsed. `float_pretrain.py` therefore trains the exact LN-free
+  `core7` architecture. Each N needs its own donor (`float_n.py`): cutting an N=128
+  model down to N=32 drops it from 78.6% to 63.3%.
+- **QAT recipe:** quantizers and callbacks are copied from HGQ2's `jsc150` example,
+  the flow JEDI-Linear used. It runs 1000 CPU epochs instead of 7000 GPU epochs.
+  `FLOOR_BITS` adds a minimum on fractional bits, to stop the EBOPs penalty from
+  shrinking the GMP block to about 1 bit.
+- **HGQ 0.1.9 bug:** the integer-bit constraint on the softmax exp table is applied to
+  the wrong variable during training. The `ClampSoftmaxExpBits` callback in
+  `train_qat.py` re-applies the cap after every epoch.
+- **Input preprocessing:** robust scaling per feature (median/IQR). The padding mask
+  must be computed *before* scaling. Doing it after silently dropped accuracy to
+  24.5%, so `load_jets()` now fails loudly if the padding fraction is off.
+- **Input port width:** widened from `(1,6,8)` to `(1,7,8)`. Over the full dataset,
+  58 constituents exceed ±64 and were wrapping to negative pT. The extra bit costs
+  +192 LUTs.
+- **Checkpoints:** `.keras` files can't be deserialized because the GMP indicators
+  are closures. The extraction scripts rebuild the model in code and call
+  `load_weights(skip_mismatch=False)`.
+- **macOS Verilator build:** da4ml's emulator makefile is written for Linux.
+  `extract_hw.compile_emulator()` patches the linker flags and `nproc`.
+
 ## Contents
+
+**Start with the PHAT-JeT pipeline scripts.** These define the model and take it
+from data to Verilog. Everything else is an experiment built on top of them.
 
 ```
 scripts/
-  # core pipeline
-  phat_jet_k3.py      Keras-3 port of PHAT-JeT (float + HGQ2 builder, one code path,
-                      1:1 weight transfer; fully da4ml-traceable)
-  preprocess.py       single source of truth for data: load_jets() (load + robust
-                      scale + padding sanity check), gmp_edges_scaled()
-  train_qat.py        HGQ2 QAT with EBOPs Pareto scan (jsc150 hyperparameters)
-  extract_hw.py       checkpoint -> val acc -> da4ml trace -> pipeline -> Verilog
-                      -> bit-exact Verilator check -> results/hw_results.json
-  bitexact.py         standalone RTL-vs-Keras bit-exactness check
+  # ── PHAT-JeT architecture + pipeline (start here) ─────────────────────────
+  phat_jet_k3.py      THE MODEL: hardware-synthesizable PHAT-JeT
+                      (build_phat_jet_k3: float or quantized, same code path)
+  preprocess.py       data: load_jets(), robust_scale(), gmp_edges_scaled()
+  grid_shootout.py    defines GRIDS (the fixed GMP bin edges, incl. core7)
+  float_pretrain.py   step 1: float training at N=128
+  float_n.py          step 1b: float donor at another N (16/32/64)
+  train_qat.py        step 2: HGQ2 QAT -> Pareto checkpoints (build_qat_model)
+  extract_hw.py       step 3: checkpoint -> LUT/FF/latency + Verilog + RTL check
+  trace_n.py          step 3 (quick): LUT/FF/latency only, no Verilog
+  bitexact.py         step 4: standalone RTL-vs-Keras bit-exactness check
 
-  # training variants
-  float_pretrain.py, float_n.py, init_pretrained.py   float pretrain / warm starts
-  train_hold.py, train_floor.py, train_qat_continue.py  QAT at a fixed operating point
-  recover.py .. recover4.py, lrscan.py, lrscan2.py   frozen-cost accuracy recovery
+  # ── experiments: training variants ────────────────────────────────────────
+  train_hold.py, train_floor.py, train_qat_continue.py  QAT held at a fixed operating point
+  recover.py .. recover4.py, lrscan.py, lrscan2.py     fine-tune for accuracy at fixed cost
+  init_pretrained.py                                   load the original repo's float weights
 
-  # hardware studies / benchmarks
-  nsweep.py, trace_n.py, watch_trace.py, trace_budget_band.py   trace checkpoints across N
-  attn_shootout.py, depth_ablate.py, attrib_n.py, sweep_latency.py   where the LUTs/stages go
-  grid_shootout.py, qdiag.py                           GMP grid choice, quantization loss
-  bench_headtohead.py, run_bench_phat.py               PHAT-JeT on JEDI-Linear's exact settings
+  # ── experiments: hardware studies / benchmarks ────────────────────────────
+  nsweep.py, watch_trace.py, trace_budget_band.py      trace many checkpoints
+  attn_shootout.py, depth_ablate.py, attrib_n.py, sweep_latency.py   where LUTs/stages go
+  qdiag.py                                             where quantization loses accuracy
+  bench_headtohead.py, run_bench_phat.py               PHAT-JeT on JEDI-Linear's da4ml settings
   build_jedi.py, bench_jedi_family.py, jedi_scaled.py  JEDI-Linear reference points
   dominance.py, make_rebuttal_figs.py                  iso-accuracy comparison, figures
-docs/                 decision log (PROJECT_NOTES.md), handoff, debug findings, rebuttal text
-results/              hw_results.json and component cost breakdowns
+docs/       PROJECT_NOTES.md (decision log), HANDOFF.md (lab notebook), grid study, rebuttal text
+results/    hw_results.json, comparison_final.csv, component cost breakdowns
 ```
 
 Only code, docs and the small result files are tracked. Checkpoints, traces,
@@ -138,17 +195,77 @@ JEDI-Linear-matched config — 128 highest-pT constituents × (pT, ηrel, φrel)
 zero-padded, 5-class one-hot — with the snippet in `docs/PROJECT_NOTES.md`
 (§ Dataset); output is `data/jets_128x3.npz` (620k train / 260k val).
 
-## Run
+## How to use
+
+Run everything from the repo root in the `fpga` env. Outputs (checkpoints, logs,
+Verilog projects) are written to the repo root.
 
 ```bash
-python scripts/train_qat.py            # QAT; Pareto checkpoints -> pareto/
-python scripts/extract_hw.py pareto/<ckpt>.keras   # hardware numbers + Verilog
+export KERAS_BACKEND=jax GRID_NAME=core7
 ```
 
-Latency convention: pipeline stages × 3.33 ns (300 MHz, JEDI-Linear's target
-clock). Resource numbers are **da4ml estimates** (no Vivado run); JEDI-Linear
-reports post-P&R, which is typically *lower* than pre-synthesis estimates —
-stated explicitly wherever compared.
+**1. Train the float model** (the QAT model starts from these weights)
+
+```bash
+python scripts/float_pretrain.py 60                    # N=128 -> float_phatjet_core7.keras
+N_PARTICLES=64 WARM=128 python scripts/float_n.py 30   # N=64  -> float_phatjet_core7_n64.keras
+```
+
+**2. Quantization-aware training.** A single run sweeps the EBOPs penalty upward,
+keeping every non-dominated (accuracy, EBOPs) epoch.
+
+```bash
+N_PARTICLES=64 RUN_TAG=qat_n64 FLOOR_BITS=2 QAT_EPOCHS=1000 python scripts/train_qat.py
+# -> pareto_qat_n64/epoch=..-val_acc=..-ebops=...keras, qat_n64_log.csv
+```
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `N_PARTICLES` / `PATCH_SIZE` | 128 / 8 | constituents per jet / particles per patch |
+| `D_MODEL` / `NUM_HEADS` | 16 / 4 | width / attention heads |
+| `PARALLEL_ATTN` | 0 | 1 = parallel local/patch attention (lower latency; needs a parallel float donor) |
+| `FLOAT_CK` | `float_phatjet_core7[_nN].keras` | float donor to start from |
+| `QAT_RESUME` | — | continue from an already-quantized checkpoint |
+| `FLOOR_BITS` | 0 | minimum fractional bits per quantizer |
+| `QAT_EPOCHS`, `BETA0`, `BETA_MULT` | 1000, 2e-8, 1 | schedule length and EBOPs-penalty ramp |
+| `RUN_TAG` | — | **must be unique per run** (CSV logs append) |
+
+**3. Hardware numbers + Verilog.** Always pass the checkpoint explicitly, and
+re-evaluate accuracy rather than trusting the filename: several filenames were
+more than 1 point optimistic.
+
+```bash
+N_PARTICLES=64 python scripts/extract_hw.py pareto_qat_n64/<ckpt>.keras
+#   -> Verilog in verilog_<ckpt>/, row in results/hw_results.json
+#   N_PARTICLES must match the checkpoint (default 128). SKIP_EMU=1 skips the slow Verilator build.
+python scripts/trace_n.py <ckpt>.keras 64    # quick estimate only (args: ckpt N [patch_size])
+```
+
+Latency = pipeline stages × 3.33 ns (300 MHz), traced with a latency cutoff of 4.0.
+Don't requote a design at another clock; retrace it instead.
+
+**4. Bit-exactness check**
+
+```bash
+BE_CKPT=<ckpt>.keras BE_PRJ=bitexact_prj python scripts/bitexact.py
+```
+
+**Use the model directly**
+
+```python
+import sys; sys.path.insert(0, "scripts")
+from preprocess import gmp_edges_scaled
+from phat_jet_k3 import build_phat_jet_k3
+from train_qat import build_qat_model
+
+edges = gmp_edges_scaled("core7")                  # fixed GMP grid, robust-scaled units
+model  = build_phat_jet_k3(num_particles=64, gmp_edges=edges)   # float reference
+qmodel = build_qat_model(gmp_edges=edges, num_particles=64)      # HGQ2, same layer names
+qmodel.load_weights("pareto_qat_n64/<ckpt>.keras", skip_mismatch=False)
+```
+
+Resource numbers are **da4ml estimates** (no Vivado run). JEDI-Linear's numbers
+are post-place-and-route; every comparison table labels which is which.
 
 ## Repository notes
 
